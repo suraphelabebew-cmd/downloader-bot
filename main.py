@@ -18,7 +18,7 @@ log = logging.getLogger("downloader-bot")
 
 app = FastAPI(title="yt-dlp Telegram Downloader")
 
-# ---- Config (set these as environment variables on Render) ----
+# ---- Config (set these as environment variables) ----
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 DOWNLOADER_TOKEN = os.environ.get("DOWNLOADER_TOKEN", "")
 TELEGRAM_WEBHOOK_SECRET = os.environ.get("TELEGRAM_WEBHOOK_SECRET") or DOWNLOADER_TOKEN
@@ -46,7 +46,13 @@ def extract_url(text: str) -> Optional[str]:
 
 
 def get_public_base_url() -> str:
-    return os.environ.get("PUBLIC_BASE_URL") or os.environ.get("RENDER_EXTERNAL_URL", "")
+    if os.environ.get("PUBLIC_BASE_URL"):
+        return os.environ["PUBLIC_BASE_URL"]
+    if os.environ.get("RENDER_EXTERNAL_URL"):
+        return os.environ["RENDER_EXTERNAL_URL"]
+    if os.environ.get("RAILWAY_PUBLIC_DOMAIN"):
+        return f"https://{os.environ['RAILWAY_PUBLIC_DOMAIN']}"
+    return ""
 
 
 def download_video(url: str) -> Path:
@@ -102,7 +108,6 @@ async def cleanup_loop():
 
 @app.on_event("startup")
 async def on_startup():
-    # Auto-register the Telegram webhook using Render's own public URL
     external_url = get_public_base_url()
     if external_url and TELEGRAM_BOT_TOKEN:
         webhook_url = f"{external_url}/telegram/webhook/{TELEGRAM_WEBHOOK_SECRET}"
@@ -110,7 +115,7 @@ async def on_startup():
             r = await client.post(f"{TELEGRAM_API}/setWebhook", json={"url": webhook_url})
             log.info("setWebhook -> %s | response: %s", webhook_url, r.text)
     else:
-        log.warning("Skipping webhook registration (missing RENDER_EXTERNAL_URL or TELEGRAM_BOT_TOKEN)")
+        log.warning("Skipping webhook registration (missing public URL or TELEGRAM_BOT_TOKEN)")
 
     app.state.cleanup_task = asyncio.create_task(cleanup_loop())
 
@@ -186,10 +191,7 @@ async def telegram_webhook(secret: str, request: Request):
 
 @app.post("/download")
 async def api_download(request: Request, authorization: str = Header(None)):
-    """Optional direct API — e.g. for a Lovable frontend.
-    Call with: POST /download  {"url": "..."}  Header: Authorization: Bearer <DOWNLOADER_TOKEN>
-    Returns JSON with a direct download link (same link system the Telegram bot uses).
-    """
+    """Optional direct API — e.g. for a Lovable frontend."""
     if not DOWNLOADER_TOKEN or authorization != f"Bearer {DOWNLOADER_TOKEN}":
         raise HTTPException(status_code=401, detail="unauthorized")
 
