@@ -2,6 +2,7 @@ import os
 import re
 import time
 import uuid
+import base64
 import asyncio
 import logging
 from pathlib import Path
@@ -30,6 +31,21 @@ CLEANUP_INTERVAL_MINUTES = int(os.environ.get("CLEANUP_INTERVAL_MINUTES", "5"))
 
 STORAGE_DIR = Path(os.environ.get("STORAGE_DIR", "/app/storage"))
 STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+
+# Optional: paste a base64-encoded YouTube cookies.txt here to get past
+# "Sign in to confirm you're not a bot" errors on some videos. Safe to
+# leave unset — TikTok/Instagram downloads are unaffected either way.
+COOKIES_FILE: Optional[str] = None
+_cookies_b64 = os.environ.get("YOUTUBE_COOKIES_B64", "")
+if _cookies_b64:
+    try:
+        COOKIES_FILE = str(STORAGE_DIR / "cookies.txt")
+        with open(COOKIES_FILE, "wb") as f:
+            f.write(base64.b64decode(_cookies_b64))
+        log.info("Loaded YouTube cookies from YOUTUBE_COOKIES_B64")
+    except Exception:
+        log.exception("Failed to decode YOUTUBE_COOKIES_B64 — continuing without cookies")
+        COOKIES_FILE = None
 
 FILENAME_RE = re.compile(r"^[a-f0-9]{32}\.mp4$")
 
@@ -69,6 +85,8 @@ def download_video(url: str) -> Path:
         "no_warnings": True,
         "restrictfilenames": True,
     }
+    if COOKIES_FILE:
+        ydl_opts["cookiefile"] = COOKIES_FILE
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.extract_info(url, download=True)
 
@@ -179,9 +197,10 @@ async def telegram_webhook(secret: str, request: Request):
             f"Your video is ready ✅ (link valid for {FILE_TTL_MINUTES} minutes)",
             download_url=download_url,
         )
-    except yt_dlp.utils.DownloadError:
+    except yt_dlp.utils.DownloadError as e:
         log.exception("yt-dlp failed for %s", url)
-        await tg_send_message(chat_id, "Couldn't download that link — it may be private, region-locked, or unsupported.")
+        reason = str(e).split("\n")[0][:300]
+        await tg_send_message(chat_id, f"Couldn't download that video.\nReason: {reason}")
     except Exception:
         log.exception("Unexpected error handling %s", url)
         await tg_send_message(chat_id, "Something went wrong processing that link.")
